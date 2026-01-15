@@ -2,48 +2,41 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 
-// --- ここを書き換えてください ---
-const char* ssid     = "GlocalNet_0XEONY";
-const char* password = "65666475";
-const char* alarmUnitIp = "192.168.x.x"; // 親機のシリアルモニターに出たIPアドレス
+const char* ssid     = "AiR-WiFi_0V3MP5";
+const char* password = "62153483";
 
-#define BUTTON_PIN 14 // ボタンを繋ぐピン（14番とGND）
+// アラーム本体（親機）のIPアドレスをここに入力
+const char* serverUrl = "http://192.168.43.10/stop"; 
+
+#define REMOTE_BUTTON_PIN 27 // WROVERなのでここでも16は避けます
 
 void setup() {
   Serial.begin(115200);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(REMOTE_BUTTON_PIN, INPUT_PULLUP);
 
-  // WiFi接続
   WiFi.begin(ssid, password);
-  Serial.print("WiFi接続中");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi接続完了！");
-  Serial.print("子機のIPアドレス: ");
-  Serial.println(WiFi.localIP());
+  Serial.println("\nConnected!");
 }
 
 void loop() {
-  // ボタンが押されたか確認
-  if (digitalRead(BUTTON_PIN) == LOW) {
-    Serial.println("ボタンが押されました。通信開始...");
+  // ボタンが押されたらリクエスト送信
+  if (digitalRead(REMOTE_BUTTON_PIN) == LOW) {
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      http.begin(serverUrl);
+      int httpCode = http.GET(); // 親機の /stop を叩く
 
-    HTTPClient http;
-    // 親機のURLへリクエスト（テストとしてルートページにアクセス）
-    String url = "http://" + String(alarmUnitIp) + "/"; 
-    
-    http.begin(url);
-    int httpCode = http.GET();
-
-    if (httpCode > 0) {
-      Serial.printf("通信成功！ 親機からのレスポンスコード: %d\n", httpCode);
-    } else {
-      Serial.printf("通信失敗... エラー: %s\n", http.errorToString(httpCode).c_str());
+      if (httpCode > 0) {
+        Serial.printf("[HTTP] GET... code: %d\n", httpCode);
+      } else {
+        Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+      }
+      http.end();
     }
-    http.end();
-
-    delay(500); // チャタリング・連打防止
+    delay(1000); // 連続送信防止
   }
 }

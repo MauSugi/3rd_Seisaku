@@ -3,9 +3,10 @@
 #include <WebServer.h>
 #include <time.h>
 #include <DFRobotDFPlayerMini.h>
+#include <TM1637Display.h> // 追加：7セグ用ライブラリ
 
-const char* ssid     = "GlocalNet_0XEONY";
-const char* password = "65666475";
+const char* ssid     = "AiR-WiFi_0V3MP5";
+const char* password = "62153483";
 
 // アラーム設定
 int alarmHour = 7;
@@ -24,6 +25,12 @@ DFRobotDFPlayerMini myDFPlayer;
 // NTP設定
 const char* ntpServer = "ntp.nict.jp";
 const long  gmtOffset_sec = 9 * 3600;
+
+// --- 追加セクション：7セグ用設定 ---
+#define CLK_PIN 18      // 7セグ CLK
+#define DIO_PIN 19      // 7セグ DIO
+TM1637Display display(CLK_PIN, DIO_PIN);
+// ---------------------------------
 
 // HTML画面（設定＋停止ボタン）
 void handleRoot() {
@@ -71,7 +78,6 @@ void handleSet() {
 }
 
 // アラーム停止処理（ボタンユニットやスマホから呼ばれる）
-// アラーム停止処理（文字化け修正版）
 void handleStop() {
   isAlarmActive = false;
   myDFPlayer.stop();
@@ -95,6 +101,11 @@ void handleStop() {
 
 void setup() {
   Serial.begin(115200);
+
+  // --- 追加セクション：7セグ初期化 ---
+  display.setBrightness(3); // 明るさ設定
+  // ------------------------------
+
   myDFPlayerSerial.begin(9600, SERIAL_8N1, MY_RX_PIN, MY_TX_PIN);
   
   if (!myDFPlayer.begin(myDFPlayerSerial)) {
@@ -119,6 +130,12 @@ void loop() {
 
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
+    // --- 追加セクション：7セグ表示処理 ---
+    int currentTime = (timeinfo.tm_hour * 100) + timeinfo.tm_min;
+    // 1秒おきにコロンを点滅させる
+    display.showNumberDecEx(currentTime, (timeinfo.tm_sec % 2 == 0 ? 0b01000000 : 0), true);
+    // ----------------------------------
+
     // アラーム開始判定（秒が0の時かつフラグがオフの時）
     if (timeinfo.tm_hour == alarmHour && timeinfo.tm_min == alarmMinute && timeinfo.tm_sec == 0) {
       if (!isAlarmActive) {
