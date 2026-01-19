@@ -4,94 +4,119 @@
 #include <time.h>
 #include <DFRobotDFPlayerMini.h>
 #include <TM1637Display.h>
+#include <LittleFS.h> // ファイルシステム用ライブラリ
 
+// --- WiFi & 固定IP設定 ---
 const char* ssid     = "AiR-WiFi_0V3MP5";
 const char* password = "62153483";
+IPAddress ip(192, 168, 43, 10);      
+IPAddress gateway(192, 168, 43, 1);   
+IPAddress subnet(255, 255, 255, 0);   
+IPAddress dns(8, 8, 8, 8);            
 
-int alarmHour = 7;
-int alarmMinute = 30;
-int alarmTrack = 1;
-bool isAlarmActive = false;
-
-float sleepDebt = 0.0;
-bool isSleeping = false;
-time_t sleepStartTime = 0;
-const float IDEAL_SLEEP = 7.0; 
-
-#define BUTTON_PIN 27
 #define CLK_PIN 18
 #define DIO_PIN 19
 #define MY_TX_PIN 25 
 #define MY_RX_PIN 26
+
+// 管理変数
+int alarmHour = 7; 
+int alarmMinute = 30;
+int alarmTrack = 1;
+bool isAlarmActive = false;
+bool alreadyTriggered = false; 
+float sleepDebt = 0.0;
+bool isSleeping = false;
+time_t sleepStartTime = 0;
 
 WebServer server(80);
 HardwareSerial myDFPlayerSerial(2); 
 DFRobotDFPlayerMini myDFPlayer;
 TM1637Display display(CLK_PIN, DIO_PIN);
 
-const char* ntpServer = "ntp.nict.jp";
-const long  gmtOffset_sec = 9 * 3600;
+// --- 内部ROM 操作関数 ---
+void saveDebtToROM() {
+  File f = LittleFS.open("/debt.txt", "w");
+  if (f) {
+    f.print(sleepDebt);
+    f.close();
+    Serial.printf("[ROM] Saved Debt: %.2f\n", sleepDebt);
+  }
+}
 
+void loadDebtFromROM() {
+  if (LittleFS.exists("/debt.txt")) {
+    File f = LittleFS.open("/debt.txt", "r");
+    if (f) {
+      String s = f.readString();
+      sleepDebt = s.toFloat();
+      f.close();
+      Serial.printf("[ROM] Loaded Debt: %.2f\n", sleepDebt);
+    }
+  } else {
+    Serial.println("[ROM] No saved data found.");
+  }
+}
+
+// --- Webサーバー ハンドラ ---
+// --- Webサーバー ハンドラ ---
 void handleRoot() {
   String s = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,user-scalable=no'>";
-  s += "<link rel='icon' href='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔔</text></svg>'>";
-  s += "<title>Smart Alarm</title>";
-  s += "<style>";
-  s += "body{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif; background:#f0f2f5; margin:0; display:flex; align-items:center; justify-content:center; min-height:100vh; color:#1c1e21;}";
-  s += ".c{background:#fff; padding:40px 30px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.08); width:90%; max-width:360px; text-align:center;}";
-  s += "#dbx{padding:15px; border-radius:15px; margin-bottom:15px; color:#fff; font-weight:bold; transition:0.5s;}";
-  s += "h3{margin:0 0 10px; font-weight:600; color:#4b4b4b;}";
-  s += "#curr{font-size:4rem; font-weight:700; margin:10px 0; background:linear-gradient(45deg, #4a90e2, #9b51e0); -webkit-background-clip:text; -webkit-fill-color:transparent; -webkit-text-fill-color:transparent;}";
-  s += ".field{text-align:left; margin-top:15px;}";
-  s += "label{display:block; margin-bottom:5px; font-size:0.85rem; font-weight:bold; color:#8e8e93;}";
-  s += "input, select{width:100%; padding:12px; border:2px solid #f0f0f0; border-radius:12px; font-size:1rem; box-sizing:border-box; background:#f9f9f9;}";
-  s += "button{width:100%; padding:16px; margin-top:10px; border:none; border-radius:14px; background:#1c1e21; color:#fff; font-size:1.1rem; font-weight:bold; cursor:pointer; transition:all 0.2s ease;}";
-  s += ".s-btn{background:#1a237e; margin-top:10px;}";
-  s += ".d-btn{background:#ff5252; color:#fff; margin-top:10px; font-size:0.9rem;}";
-  s += ".status{margin-top:10px; font-size:0.8rem; color:#4a90e2; opacity:0;}";
-  s += "</style></head>";
-  s += "<body onload='g()'><div class='c'>";
-  s += "<div id='dbx'>睡眠負債: <span id='debt'>0.0</span>h</div>";
-  s += "<h3>🔔 Smart Alarm</h3>";
-  s += "<div id='curr'>00:00</div>";
-  s += "<button onclick='sl()' id='slB' class='s-btn'>🌙 今から寝る</button>";
-  s += "<button onclick='stopDemo()' class='d-btn'>⚡ [DEMO] STOP</button>";
-  s += "<div class='field'><label>⏰ Time</label><input type='time' id='t'></div>";
-  s += "<div class='field'><label>🎵 Track</label><select id='m'><option value='1'>Track 1</option><option value='2'>Track 2</option></select></div>";
-  s += "<button onclick='s()' id='btn'>SET ALARM</button>";
-  s += "<div id='st' class='status'>Saved!</div></div>";
-  s += "<script>";
   
-  // 最新データ取得 (キャッシュ対策+表示リセットロジック追加)
-  s += "async function g(){try{const r=await fetch('/api/get?t='+new Date().getTime());const d=await r.json();";
-  s += "document.getElementById('curr').innerText=`${d.h.toString().padStart(2,'0')}:${d.m.toString().padStart(2,'0')}`;";
-  s += "document.getElementById('t').value=`${d.h.toString().padStart(2,'0')}:${d.m.toString().padStart(2,'0')}`;";
-  s += "document.getElementById('m').value=d.t;";
-  s += "document.getElementById('debt').innerText=d.debt.toFixed(1);";
-  s += "const b=document.getElementById('dbx'); if(d.debt>5){b.style.background='#ff5252';}else if(d.debt>2){b.style.background='#ffa726';}else{b.style.background='#66bb6a';}";
-  s += "const sb=document.getElementById('slB');";
-  s += "if(d.isSl){sb.innerText='💤 就寝中...'; sb.style.opacity='0.6';}else{sb.innerText='🌙 今から寝る'; sb.style.opacity='1';}";
+  // --- iPhoneホーム画面用アイコン設定 ---
+  s += "<meta name='apple-mobile-web-app-title' content='SleepDebt'>";
+  // アイコンを「月(🌙)」の絵文字画像に設定
+  s += "<link rel='apple-touch-icon' href='https://fonts.gstatic.com/s/i/short-term/release/googlestylesheet/mountain_city_and_sun/default/24px.svg'>";
+  s += "<link rel='apple-touch-icon' href='https://img.icons8.com/emoji/160/000000/crescent-moon-emoji.png'>"; 
+
+  s += "<style>body{font-family:'Segoe UI',sans-serif; background:#0f172a; color:#f8fafc; margin:0; display:flex; align-items:center; justify-content:center; min-height:100vh;}";
+  s += ".c{background:rgba(255,255,255,0.05); backdrop-filter:blur(10px); padding:30px; border-radius:30px; border:1px solid rgba(255,255,255,0.1); width:90%; max-width:380px; text-align:center;}";
+  s += ".graph-container{background:rgba(255,255,255,0.05); border-radius:10px; height:12px; width:100%; margin:15px 0 5px 0; overflow:hidden; border:1px solid rgba(255,255,255,0.05);}";
+  s += "#bar{height:100%; width:0%; transition:1s cubic-bezier(0.4, 0, 0.2, 1); border-radius:10px;}";
+  s += ".graph-label{display:flex; justify-content:space-between; font-size:0.65rem; color:#64748b; margin-bottom:20px;}";
+  s += "#curr{font-size:4rem; font-weight:200; margin:5px 0; color:#fff;}";
+  s += ".main-box{width:100%; height:60px; display:flex; align-items:center; justify-content:center; border-radius:15px; font-size:1.1rem; font-weight:600; margin-bottom:10px;}";
+  s += ".s-btn{background:linear-gradient(135deg, #6366f1, #4338ca); color:#fff; border:none; cursor:pointer;}";
+  s += ".sl-label{background:rgba(255,255,255,0.05); color:#475569; border:1px solid rgba(255,255,255,0.1); letter-spacing:2px;}";
+  s += "select, input{width:100%; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:#fff; padding:12px; border-radius:10px; margin-bottom:15px; outline:none;}";
+  s += ".footer-btns{margin-top:30px; border-top:1px solid rgba(255,255,255,0.05); padding-top:10px; display:flex; justify-content:space-around;}";
+  s += ".sub-btn{background:transparent; border:none; color:#475569; font-size:0.7rem; cursor:pointer; padding:10px;}";
+  s += "</style></head><body><div class='c'>";
+  
+  s += "<div style='text-align:left;'><span style='font-size:0.75rem; color:#94a3b8; letter-spacing:1px;'>SLEEP DEBT</span>";
+  s += " <span id='debt' style='font-size:1.2rem; font-weight:600;'>0.0</span> <small style='color:#64748b;'>h</small></div>";
+  s += "<div class='graph-container'><div id='bar'></div></div>";
+  s += "<div class='graph-label'><span>GOOD</span><span>CAUTION</span><span>DANGER</span></div>";
+  s += "<div id='curr'>07:30</div>";
+  s += "<div id='box_awake'><button class='main-box s-btn' onclick='doSleep()'>START SLEEPING</button></div>";
+  s += "<div id='box_sleep' style='display:none;'><div class='main-box sl-label'>✨ SLEEPING...</div></div>";
+  s += "<div style='text-align:left; margin-top:20px;'><label style='font-size:0.7rem; color:#64748b;'>ALARM TIME</label><input type='time' id='t' value='07:30'>";
+  s += "<label style='font-size:0.7rem; color:#64748b;'>TRACK</label><select id='trk'><option value='1'>Track 1</option><option value='2'>Track 2</option><option value='3'>Track 3</option></select>";
+  s += "<button style='width:100%; padding:12px; border-radius:10px; border:none; background:#334155; color:#fff; font-weight:600;' onclick='setAlarm()'>SAVE SETTINGS</button></div>";
+  s += "<div class='footer-btns'><button class='sub-btn' onclick='resetDebt()'>Reset Data</button><button class='sub-btn' onclick='doStop()'>Debug Stop</button></div>";
+  
+  s += "</div><script>";
+  s += "async function update(){ try{ const r=await fetch('/api/get?v='+Date.now()); const d=await r.json();";
+  s += "document.getElementById('debt').innerText = d.debt.toFixed(1);";
+  s += "let p = Math.min(Math.max(d.debt * 10, 0), 100); const b = document.getElementById('bar');";
+  s += "b.style.width = p + '%';";
+  s += "if(d.debt > 5){ b.style.background = '#f43f5e'; b.style.boxShadow = '0 0 10px #f43f5e'; }";
+  s += "else if(d.debt > 2.5){ b.style.background = '#fbbf24'; b.style.boxShadow = '0 0 10px #fbbf24'; }";
+  s += "else { b.style.background = '#10b981'; b.style.boxShadow = 'none'; }";
+  s += "document.getElementById('curr').innerText = `${d.h.toString().padStart(2,'0')}:${d.m.toString().padStart(2,'0')}`;";
+  s += "document.getElementById('box_awake').style.display = d.isSl ? 'none' : 'block';";
+  s += "document.getElementById('box_sleep').style.display = d.isSl ? 'block' : 'none';";
   s += "}catch(e){}}";
-
-  // ★ デモ用停止関数（確実に更新を反映させるフロー）
-  s += "async function stopDemo(){";
-  s += "  if(!confirm('アラームを強制停止しますか？'))return;";
-  s += "  await fetch('/stop');"; 
-  s += "  await new Promise(res => setTimeout(res, 500));"; // ESP32側の計算完了を待つ
-  s += "  await g();"; // 最新状態を再取得
-  s += "  alert('Stopped & Updated!');";
-  s += "}";
-
-  s += "async function sl(){await fetch('/api/sleep'); g();}";
-  s += "async function s(){const b=document.getElementById('btn');const t=document.getElementById('t').value;const m=document.getElementById('m').value;if(!t)return;";
-  s += "b.innerText='...'; await fetch(`/api/set?t=${t}&m=${m}`); location.reload();}";
-  s += "</script></body></html>";
+  s += "async function doSleep(){ await fetch('/api/sleep'); update(); }";
+  s += "async function doStop(){ await fetch('/stop'); update(); }";
+  s += "async function setAlarm(){ const t=document.getElementById('t').value; const trk=document.getElementById('trk').value; await fetch(`/api/set?t=${t}&trk=${trk}`); update(); }";
+  s += "async function resetDebt(){ if(confirm('Reset all data?')){ await fetch('/api/reset'); location.reload(); } }";
+  s += "setInterval(update, 3000); update();</script></body></html>";
   server.send(200, "text/html", s);
 }
 
 void handleGetSettings() {
-  String json = "{\"h\":" + String(alarmHour) + ",\"m\":" + String(alarmMinute) + ",\"t\":" + String(alarmTrack) + 
-                ",\"debt\":" + String(sleepDebt) + ",\"isSl\":" + (isSleeping?"true":"false") + "}";
+  String json = "{\"debt\":" + String(sleepDebt) + ",\"isSl\":" + (isSleeping?"true":"false") + ",\"h\":" + String(alarmHour) + ",\"m\":" + String(alarmMinute) + "}";
   server.send(200, "application/json", json);
 }
 
@@ -101,67 +126,87 @@ void handleSleep() {
   server.send(200, "text/plain", "OK");
 }
 
-void handleSet() {
-  if (server.hasArg("t")) {
-    String t = server.arg("t");
-    alarmHour = t.substring(0, 2).toInt();
-    alarmMinute = t.substring(3, 5).toInt();
-  }
-  if (server.hasArg("m")) alarmTrack = server.arg("m").toInt();
-  server.send(200, "text/plain", "OK");
-}
-
 void handleStop() {
-  server.send(200, "text/plain", "Stopped");
-  if (isAlarmActive) {
-    if (isSleeping) {
-      time_t now = time(NULL);
+  server.send(200, "text/plain", "Stopped"); // ブラウザへ即時返信
+  if (isSleeping) {
+    time_t now = time(NULL);
+    if (now > 1000000) {
       float hours = (float)(now - sleepStartTime) / 3600.0;
-      sleepDebt += (IDEAL_SLEEP - hours);
-      isSleeping = false;
+      sleepDebt += (7.0 - hours);
+      saveDebtToROM(); // 負債をROMに保存
     }
+    isSleeping = false;
+  }
+  if (isAlarmActive) {
     isAlarmActive = false;
     myDFPlayer.stop();
   }
 }
 
+void handleSet() {
+  if (server.hasArg("t")) {
+    alarmHour = server.arg("t").substring(0, 2).toInt();
+    alarmMinute = server.arg("t").substring(3, 5).toInt();
+  }
+  if (server.hasArg("trk")) { alarmTrack = server.arg("trk").toInt(); }
+  alreadyTriggered = false;
+  server.send(200, "text/plain", "OK");
+}
+
+void handleReset() {
+  sleepDebt = 0.0;
+  if (LittleFS.exists("/debt.txt")) { LittleFS.remove("/debt.txt"); }
+  saveDebtToROM();
+  server.send(200, "text/plain", "Reset OK");
+}
+
 void setup() {
   Serial.begin(115200);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  
+  // ファイルシステム初期化
+  if (!LittleFS.begin(true)) { Serial.println("LittleFS Mount Failed"); }
+  loadDebtFromROM(); // 起動時に読み込み
+
   display.setBrightness(3);
   myDFPlayerSerial.begin(9600, SERIAL_8N1, MY_RX_PIN, MY_TX_PIN);
-  myDFPlayer.begin(myDFPlayerSerial);
-
+  myDFPlayer.begin(myDFPlayerSerial, false);
+  
+  WiFi.config(ip, gateway, subnet, dns);
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
-
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  
   server.on("/", handleRoot);
   server.on("/api/get", handleGetSettings);
-  server.on("/api/set", handleSet);
   server.on("/api/sleep", handleSleep);
   server.on("/stop", handleStop);
+  server.on("/api/set", handleSet);
+  server.on("/api/reset", handleReset);
   server.begin();
 
-  configTime(gmtOffset_sec, 0, ntpServer);
+  configTime(9 * 3600, 0, "ntp.nict.jp");
 }
 
 void loop() {
   server.handleClient();
-  if (isAlarmActive && digitalRead(BUTTON_PIN) == LOW) {
-    handleStop();
-    delay(500);
-  }
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    int currentTime = (timeinfo.tm_hour * 100) + timeinfo.tm_min;
-    display.showNumberDecEx(currentTime, (timeinfo.tm_sec % 2 == 0 ? 0b01000000 : 0), true);
-    if (timeinfo.tm_hour == alarmHour && timeinfo.tm_min == alarmMinute && timeinfo.tm_sec == 0) {
-      if (!isAlarmActive) {
-        isAlarmActive = true;
-        myDFPlayer.volume(20);
-        myDFPlayer.play(alarmTrack);
+  
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck > 1000) {
+    lastCheck = millis();
+    time_t now = time(NULL);
+    struct tm *ti = localtime(&now);
+    if (now > 100000) {
+      display.showNumberDecEx((ti->tm_hour * 100) + ti->tm_min, (ti->tm_sec % 2 == 0 ? 0b01000000 : 0), true);
+      
+      if (ti->tm_hour == alarmHour && ti->tm_min == alarmMinute) {
+        if (!alreadyTriggered) { 
+          isAlarmActive = true;
+          alreadyTriggered = true; 
+          myDFPlayer.volume(20);
+          myDFPlayer.play(alarmTrack);
+        }
+      } else {
+        alreadyTriggered = false;
       }
     }
   }
-  delay(100); 
 }
