@@ -3,123 +3,143 @@
 #include <WebServer.h>
 #include <time.h>
 #include <DFRobotDFPlayerMini.h>
-#include <TM1637Display.h> // 追加：7セグ用ライブラリ
+#include <TM1637Display.h>
 
 const char* ssid     = "AiR-WiFi_0V3MP5";
 const char* password = "62153483";
 
-// アラーム設定
 int alarmHour = 7;
 int alarmMinute = 30;
-bool isAlarmActive = false; // アラームが現在鳴っているかどうかのフラグ
+int alarmTrack = 1;
+bool isAlarmActive = false;
 
-// Webサーバー
-WebServer server(80);
+float sleepDebt = 0.0;
+bool isSleeping = false;
+time_t sleepStartTime = 0;
+const float IDEAL_SLEEP = 7.0; 
 
-// DFPlayer設定
+#define BUTTON_PIN 27
+#define CLK_PIN 18
+#define DIO_PIN 19
 #define MY_TX_PIN 25 
 #define MY_RX_PIN 26
+
+WebServer server(80);
 HardwareSerial myDFPlayerSerial(2); 
 DFRobotDFPlayerMini myDFPlayer;
+TM1637Display display(CLK_PIN, DIO_PIN);
 
-// NTP設定
 const char* ntpServer = "ntp.nict.jp";
 const long  gmtOffset_sec = 9 * 3600;
 
-// --- 追加セクション：7セグ用設定 ---
-#define CLK_PIN 18      // 7セグ CLK
-#define DIO_PIN 19      // 7セグ DIO
-TM1637Display display(CLK_PIN, DIO_PIN);
-// ---------------------------------
-
-// HTML画面（設定＋停止ボタン）
 void handleRoot() {
-  String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<style>body{font-family:sans-serif; text-align:center; background:#f4f4f4;} .card{background:white; padding:20px; border-radius:10px; display:inline-block; margin-top:50px; box-shadow:0 2px 5px rgba(0,0,0,0.1);} input{font-size:1.2rem; padding:10px;} .btn{display:block; width:100%; padding:15px; margin-top:20px; background:#e74c3c; color:white; text-decoration:none; border-radius:5px; font-weight:bold;}</style></head><body>";
-  html += "<div class='card'><h1>ESP32 アラーム</h1>";
-  html += "<p>現在のアラーム時刻: <strong>" + String(alarmHour) + ":" + (alarmMinute < 10 ? "0" : "") + String(alarmMinute) + "</strong></p>";
+  String s = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,user-scalable=no'>";
+  s += "<link rel='icon' href='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔔</text></svg>'>";
+  s += "<title>Smart Alarm</title>";
+  s += "<style>";
+  s += "body{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif; background:#f0f2f5; margin:0; display:flex; align-items:center; justify-content:center; min-height:100vh; color:#1c1e21;}";
+  s += ".c{background:#fff; padding:40px 30px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.08); width:90%; max-width:360px; text-align:center;}";
+  s += "#dbx{padding:15px; border-radius:15px; margin-bottom:15px; color:#fff; font-weight:bold; transition:0.5s;}";
+  s += "h3{margin:0 0 10px; font-weight:600; color:#4b4b4b;}";
+  s += "#curr{font-size:4rem; font-weight:700; margin:10px 0; background:linear-gradient(45deg, #4a90e2, #9b51e0); -webkit-background-clip:text; -webkit-fill-color:transparent; -webkit-text-fill-color:transparent;}";
+  s += ".field{text-align:left; margin-top:15px;}";
+  s += "label{display:block; margin-bottom:5px; font-size:0.85rem; font-weight:bold; color:#8e8e93;}";
+  s += "input, select{width:100%; padding:12px; border:2px solid #f0f0f0; border-radius:12px; font-size:1rem; box-sizing:border-box; background:#f9f9f9;}";
+  s += "button{width:100%; padding:16px; margin-top:10px; border:none; border-radius:14px; background:#1c1e21; color:#fff; font-size:1.1rem; font-weight:bold; cursor:pointer; transition:all 0.2s ease;}";
+  s += ".s-btn{background:#1a237e; margin-top:10px;}";
+  s += ".d-btn{background:#ff5252; color:#fff; margin-top:10px; font-size:0.9rem;}";
+  s += ".status{margin-top:10px; font-size:0.8rem; color:#4a90e2; opacity:0;}";
+  s += "</style></head>";
+  s += "<body onload='g()'><div class='c'>";
+  s += "<div id='dbx'>睡眠負債: <span id='debt'>0.0</span>h</div>";
+  s += "<h3>🔔 Smart Alarm</h3>";
+  s += "<div id='curr'>00:00</div>";
+  s += "<button onclick='sl()' id='slB' class='s-btn'>🌙 今から寝る</button>";
+  s += "<button onclick='stopDemo()' class='d-btn'>⚡ [DEMO] STOP</button>";
+  s += "<div class='field'><label>⏰ Time</label><input type='time' id='t'></div>";
+  s += "<div class='field'><label>🎵 Track</label><select id='m'><option value='1'>Track 1</option><option value='2'>Track 2</option></select></div>";
+  s += "<button onclick='s()' id='btn'>SET ALARM</button>";
+  s += "<div id='st' class='status'>Saved!</div></div>";
+  s += "<script>";
   
-  html += "<form action='/set' method='GET'>";
-  html += "時刻変更: <input type='time' name='t' required>";
-  html += "<br><input type='submit' value='設定保存' style='margin-top:10px;'>";
-  html += "</form>";
+  // 最新データ取得 (キャッシュ対策+表示リセットロジック追加)
+  s += "async function g(){try{const r=await fetch('/api/get?t='+new Date().getTime());const d=await r.json();";
+  s += "document.getElementById('curr').innerText=`${d.h.toString().padStart(2,'0')}:${d.m.toString().padStart(2,'0')}`;";
+  s += "document.getElementById('t').value=`${d.h.toString().padStart(2,'0')}:${d.m.toString().padStart(2,'0')}`;";
+  s += "document.getElementById('m').value=d.t;";
+  s += "document.getElementById('debt').innerText=d.debt.toFixed(1);";
+  s += "const b=document.getElementById('dbx'); if(d.debt>5){b.style.background='#ff5252';}else if(d.debt>2){b.style.background='#ffa726';}else{b.style.background='#66bb6a';}";
+  s += "const sb=document.getElementById('slB');";
+  s += "if(d.isSl){sb.innerText='💤 就寝中...'; sb.style.opacity='0.6';}else{sb.innerText='🌙 今から寝る'; sb.style.opacity='1';}";
+  s += "}catch(e){}}";
 
-  html += "<a href='/stop' class='btn'>【緊急】アラームを止める</a>";
-  html += "</div></body></html>";
-  server.send(200, "text/html", html);
+  // ★ デモ用停止関数（確実に更新を反映させるフロー）
+  s += "async function stopDemo(){";
+  s += "  if(!confirm('アラームを強制停止しますか？'))return;";
+  s += "  await fetch('/stop');"; 
+  s += "  await new Promise(res => setTimeout(res, 500));"; // ESP32側の計算完了を待つ
+  s += "  await g();"; // 最新状態を再取得
+  s += "  alert('Stopped & Updated!');";
+  s += "}";
+
+  s += "async function sl(){await fetch('/api/sleep'); g();}";
+  s += "async function s(){const b=document.getElementById('btn');const t=document.getElementById('t').value;const m=document.getElementById('m').value;if(!t)return;";
+  s += "b.innerText='...'; await fetch(`/api/set?t=${t}&m=${m}`); location.reload();}";
+  s += "</script></body></html>";
+  server.send(200, "text/html", s);
 }
 
-// 時刻設定処理
+void handleGetSettings() {
+  String json = "{\"h\":" + String(alarmHour) + ",\"m\":" + String(alarmMinute) + ",\"t\":" + String(alarmTrack) + 
+                ",\"debt\":" + String(sleepDebt) + ",\"isSl\":" + (isSleeping?"true":"false") + "}";
+  server.send(200, "application/json", json);
+}
+
+void handleSleep() {
+  sleepStartTime = time(NULL);
+  isSleeping = true;
+  server.send(200, "text/plain", "OK");
+}
+
 void handleSet() {
   if (server.hasArg("t")) {
     String t = server.arg("t");
     alarmHour = t.substring(0, 2).toInt();
     alarmMinute = t.substring(3, 5).toInt();
-    Serial.printf("New Alarm: %02d:%02d\n", alarmHour, alarmMinute);
-    
-    // HTMLレスポンスの作成
-    String html = "<!DOCTYPE html><html><head>";
-    // 文字化け防止のメタタグを最初の方に配置
-    html += "<meta charset='UTF-8'>"; 
-    html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-    html += "<meta http-equiv='refresh' content='3;URL=/'>";
-    html += "<style>body{font-family:sans-serif; text-align:center; padding-top:50px; background:#f4f4f4;} ";
-    html += ".msg{background:white; display:inline-block; padding:20px; border-radius:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1);}</style></head><body>";
-    html += "<div class='msg'><h2>⏰ アラームを " + t + " に設定しました</h2>";
-    html += "<p>3秒後に自動で戻ります...</p>";
-    html += "<a href='/'>今すぐ戻る</a></div>";
-    html += "</body></html>";
-    
-    // server.send の第2引数を "text/html" に、内容に UTF-8 が含まれることを明示
-    server.send(200, "text/html; charset=utf-8", html);
-  } else {
-    server.send(400, "text/plain", "Bad Request");
   }
+  if (server.hasArg("m")) alarmTrack = server.arg("m").toInt();
+  server.send(200, "text/plain", "OK");
 }
 
-// アラーム停止処理（ボタンユニットやスマホから呼ばれる）
 void handleStop() {
-  isAlarmActive = false;
-  myDFPlayer.stop();
-  Serial.println("ALARM STOPPED by Remote");
-
-  // HTMLレスポンスの作成
-  String html = "<!DOCTYPE html><html><head>";
-  html += "<meta charset='UTF-8'>"; // 文字化け防止
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<meta http-equiv='refresh' content='3;URL=/'>"; // 3秒後に戻る
-  html += "<style>body{font-family:sans-serif; text-align:center; padding-top:50px; background:#f4f4f4;} ";
-  html += ".msg{background:white; display:inline-block; padding:20px; border-radius:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1);}</style></head><body>";
-  html += "<div class='msg'><h2>✅ アラームを停止しました</h2>";
-  html += "<p>3秒後に自動で戻ります...</p>";
-  html += "<a href='/'>戻る</a></div>";
-  html += "</body></html>";
-
-  // 第2引数に charset=utf-8 を追加
-  server.send(200, "text/html; charset=utf-8", html);
+  server.send(200, "text/plain", "Stopped");
+  if (isAlarmActive) {
+    if (isSleeping) {
+      time_t now = time(NULL);
+      float hours = (float)(now - sleepStartTime) / 3600.0;
+      sleepDebt += (IDEAL_SLEEP - hours);
+      isSleeping = false;
+    }
+    isAlarmActive = false;
+    myDFPlayer.stop();
+  }
 }
 
 void setup() {
   Serial.begin(115200);
-
-  // --- 追加セクション：7セグ初期化 ---
-  display.setBrightness(3); // 明るさ設定
-  // ------------------------------
-
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  display.setBrightness(3);
   myDFPlayerSerial.begin(9600, SERIAL_8N1, MY_RX_PIN, MY_TX_PIN);
-  
-  if (!myDFPlayer.begin(myDFPlayerSerial)) {
-    Serial.println("DFPlayer error. Check SD card/connection.");
-  }
+  myDFPlayer.begin(myDFPlayerSerial);
 
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.print("\nIP Address: ");
-  Serial.println(WiFi.localIP());
+  while (WiFi.status() != WL_CONNECTED) delay(500);
 
   server.on("/", handleRoot);
-  server.on("/set", handleSet);
-  server.on("/stop", handleStop); // 停止用パスを追加
+  server.on("/api/get", handleGetSettings);
+  server.on("/api/set", handleSet);
+  server.on("/api/sleep", handleSleep);
+  server.on("/stop", handleStop);
   server.begin();
 
   configTime(gmtOffset_sec, 0, ntpServer);
@@ -127,27 +147,21 @@ void setup() {
 
 void loop() {
   server.handleClient();
-
+  if (isAlarmActive && digitalRead(BUTTON_PIN) == LOW) {
+    handleStop();
+    delay(500);
+  }
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
-    // --- 追加セクション：7セグ表示処理 ---
     int currentTime = (timeinfo.tm_hour * 100) + timeinfo.tm_min;
-    // 1秒おきにコロンを点滅させる
     display.showNumberDecEx(currentTime, (timeinfo.tm_sec % 2 == 0 ? 0b01000000 : 0), true);
-    // ----------------------------------
-
-    // アラーム開始判定（秒が0の時かつフラグがオフの時）
     if (timeinfo.tm_hour == alarmHour && timeinfo.tm_min == alarmMinute && timeinfo.tm_sec == 0) {
       if (!isAlarmActive) {
-        Serial.println("ALARM START!");
         isAlarmActive = true;
-        myDFPlayer.volume(3); // 音量は適宜調整
-        myDFPlayer.play(2);    // SDカードの0002.mp3を再生
+        myDFPlayer.volume(20);
+        myDFPlayer.play(alarmTrack);
       }
     }
   }
-  
-  // アラーム作動中、音楽が終わってしまった場合のループ処理などが必要ならここに追加
-  
   delay(100); 
 }
