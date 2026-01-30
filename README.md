@@ -1,16 +1,25 @@
 # Remote Smart Alarm
-3E制作実習「遠隔で止める目覚まし時計」\n
+
+3E制作実習「遠隔で止める目覚まし時計」
+
 alarm unit と button unit の二つに分かれています。
 
 ### 使用した部品
-・ESP32-DevKitC-VE * 2\n
-・DFPlayer Mini\n
-・Speaker\n
-・switch\n
-・7seg 4digit display\n
-etc...\n
+
+・ESP32-DevKitC-VE
+
+・DFPlayer Mini
+
+・Speaker
+
+・switch
+
+・7seg 4digit display
+
+etc...
 
 ### ディレクトリ構成
+
 ```text
 3rd_Seisaku/
 ├── 3rd_Seisaku_hardware/        # ハードウェア関連
