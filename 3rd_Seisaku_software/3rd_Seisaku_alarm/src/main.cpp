@@ -28,17 +28,19 @@ bool alreadyTriggered = false;
 float sleepDebt = 0.0;
 bool isSleeping = false;
 time_t sleepStartTime = 0;
-bool timeSynced = false;
 
 bool isSnoozeMode = false;
 unsigned long snoozeStartTime = 0;
+
+// フェードイン用の変数
+int currentVolume = 5;
+unsigned long lastVolumeUpTime = 0;
 
 WebServer server(80);
 HardwareSerial myDFPlayerSerial(2); 
 DFRobotDFPlayerMini myDFPlayer;
 TM1637Display display(CLK_PIN, DIO_PIN);
 
-// --- ユーティリティ ---
 void saveDebtToROM() {
   File f = LittleFS.open("/debt.txt", "w");
   if (f) { f.print(sleepDebt); f.close(); }
@@ -51,7 +53,6 @@ void loadDebtFromROM() {
   }
 }
 
-// --- ハンドラ ---
 void handleStop() {
   if (!isAlarmActive) { server.send(200, "text/plain", "Ignored"); return; }
   if (isSleeping) {
@@ -95,7 +96,6 @@ void handleRoot() {
   s += "<div class='form-group'><label>Set New Alarm</label><input type='time' id='t' value='07:30'>";
   s += "<label>Snooze (0.5 Step)</label><input type='number' id='snz' value='5.0' min='0.5' max='60' step='0.5'>";
   s += "<label>Select Track</label><select id='trk'>";
-  // ここで日本語名を指定
   s += "<option value='1'>1.アラーム</option>";
   s += "<option value='2'>2.Morning</option>";
   s += "<option value='3'>3.岐阜高専校歌</option>";
@@ -109,7 +109,6 @@ void handleRoot() {
   s += "document.getElementById('debt').innerText = d.debt.toFixed(1);";
   s += "document.getElementById('v_time').innerText = `${d.h.toString().padStart(2,'0')}:${d.m.toString().padStart(2,'0')}`;";
   s += "document.getElementById('v_snz').innerText = d.snz.toFixed(1) + ' min';";
-  // 選択中の日本語名を表示
   s += "const sel = document.getElementById('trk'); const name = sel.options[d.trk-1].text; document.getElementById('v_trk').innerText = name;";
   s += "let p = Math.min(d.debt*10, 100); const bar=document.getElementById('bar'); bar.style.width = p + '%';";
   s += "let c = (d.debt > 7) ? '#f87171' : (d.debt > 3) ? '#fbbf24' : '#34d399'; bar.style.background = c;";
@@ -154,21 +153,46 @@ void loop() {
   server.handleClient();
   static unsigned long lastFlash = 0; static bool isVisible = true;
   time_t now = time(NULL); struct tm *ti = localtime(&now);
+
+  // --- スヌーズ/アラーム開始ロジック ---
   if (isSnoozeMode && (millis() - snoozeStartTime > (unsigned long)(snoozeMinutes * 60000.0))) {
-    isSnoozeMode = false; isAlarmActive = true; myDFPlayer.play(alarmTrack);
+    isSnoozeMode = false; isAlarmActive = true; 
+    currentVolume = 25; // スヌーズ明けは音量25（固定）
+    myDFPlayer.volume(currentVolume);
+    delay(500);
+    myDFPlayer.play(alarmTrack);
   }
+
+  // --- 音量のフェードイン処理 ---
   if (isAlarmActive) {
-    if (millis() - lastFlash > 500) { lastFlash = millis(); isVisible = !isVisible; display.setBrightness(isVisible ? 3 : 0, true); 
+    // currentVolumeが25未満の時だけ1秒おきにアップ（スヌーズ明けの25時は実行されない）
+    if (currentVolume < 25 && (millis() - lastVolumeUpTime > 1000)) { 
+      lastVolumeUpTime = millis();
+      currentVolume++;
+      myDFPlayer.volume(currentVolume);
+    }
+
+    // 点滅ロジック
+    if (millis() - lastFlash > 500) { 
+      lastFlash = millis(); isVisible = !isVisible; display.setBrightness(isVisible ? 3 : 0, true); 
       if (now > 1000000) display.showNumberDecEx((ti->tm_hour * 100) + ti->tm_min, (ti->tm_sec % 2 == 0 ? 0b01000000 : 0), true);
     }
   } else if (!isVisible) { display.setBrightness(3, true); isVisible = true; }
+
+  // --- 定時チェック ---
   static unsigned long lastCheck = 0;
   if (millis() - lastCheck > 1000) {
     lastCheck = millis();
     if (now > 1000000) {
       if (!isAlarmActive) display.showNumberDecEx((ti->tm_hour * 100) + ti->tm_min, (ti->tm_sec % 2 == 0 ? 0b01000000 : 0), true);
       if (ti->tm_hour == alarmHour && ti->tm_min == alarmMinute && !alreadyTriggered) {
-        alreadyTriggered = true; myDFPlayer.volume(20); delay(200); myDFPlayer.play(alarmTrack); isAlarmActive = true; 
+        alreadyTriggered = true; 
+        currentVolume = 5; // 初回アラームは音量5からスタート
+        myDFPlayer.volume(currentVolume);
+        delay(200); 
+        myDFPlayer.play(alarmTrack); 
+        isAlarmActive = true; 
+        lastVolumeUpTime = millis(); // フェードイン開始時間をリセット
       }
       if (ti->tm_min != alarmMinute) alreadyTriggered = false;
     }
