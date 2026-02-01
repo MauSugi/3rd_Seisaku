@@ -92,7 +92,7 @@ void handleRoot() {
   s += "</div>";
   s += "<div class='time-container'><div class='time-label'>CURRENT TIME</div><div id='curr'>--:--</div></div>";
   s += "<div id='box_awake'><button class='main-box s-btn' onclick='doSleep()'>START SLEEPING</button></div>";
-  s += "<div id='box_sleep' style='display:none;'><div class='main-box' style='color:#475569; background:rgba(255,255,255,0.05);'>✨ SLEEPING...</div></div>";
+  s += "<div id='box_sleep' style='display:none;'><div class='main-box' style='color:#475569; background:rgb(255, 255, 255);'>✨ SLEEPING...</div></div>";
   s += "<div class='form-group'><label>Set New Alarm</label><input type='time' id='t' value='07:30'>";
   s += "<label>Snooze (0.5 Step)</label><input type='number' id='snz' value='5.0' min='0.5' max='60' step='0.5'>";
   s += "<label>Select Track</label><select id='trk'>";
